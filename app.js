@@ -49,7 +49,17 @@
     return defaults();
   }
 
+  // Set by the live-sync block at the bottom when a Firebase config is present.
+  let remote = null;
+  let canEdit = true; // local mode is always editable
+
   function save() {
+    if (remote) {
+      if (!canEdit) return;
+      remote.ref.set({ tripName: state.tripName, members: state.members, expenses: state.expenses })
+        .catch(() => showToast('Could not save: this account cannot edit.', null));
+      return;
+    }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* storage unavailable */ }
   }
 
@@ -182,6 +192,7 @@
 
   function showToast(text, undo) {
     undoAction = undo;
+    $('#toastUndo').hidden = !undo;
     $('#toastText').textContent = text;
     $('#toast').hidden = false;
     clearTimeout(toastTimer);
@@ -302,7 +313,7 @@
     save();
     render();
     showToast(removed.title + ' removed', () => {
-      state.expenses.push(removed);
+      state.expenses.splice(Math.min(index, state.expenses.length), 0, removed);
       save();
       render();
     });
@@ -346,4 +357,140 @@
   document.title = state.tripName + ' · Trip Calculator';
 
   render();
+
+  /* ---------- Live sync (optional) ----------
+     With a Firebase config in firebase-config.js, everyone who opens the link sees
+     updates in real time and cannot edit. Only the signed-in owner can write; the
+     database rules (see README) enforce that, the UI just mirrors it. */
+
+  const cfg = window.TRIP_FIREBASE;
+  const badge = $('#liveBadge');
+  const authBtn = $('#authBtn');
+  const asList = (v) => (Array.isArray(v) ? v.filter(Boolean) : v && typeof v === 'object' ? Object.values(v) : []);
+
+  let connected = false;
+  let remoteLoaded = false; // true once the first database snapshot has arrived
+  let remoteEmpty = true;
+  let currentUser = null;
+  const localSeed = load(); // the owner's pre-sync data, offered once to an empty database
+
+  function setEditable(on) {
+    canEdit = on;
+    document.body.classList.toggle('is-viewer', !on);
+    tripName.readOnly = !on;
+    updateBadge();
+  }
+
+  function updateBadge() {
+    const status = document.body.dataset.sync;
+    badge.hidden = false;
+    badge.dataset.status = status;
+    badge.textContent =
+      status === 'connecting' ? 'Connecting…' :
+      status === 'offline' ? 'Offline' :
+      canEdit ? 'Live' : 'Live · view only';
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Failed to load ' + src));
+      document.head.append(s);
+    });
+  }
+
+  async function initRemote() {
+    state = defaults();
+    render();
+    setEditable(false);
+    document.body.dataset.sync = 'connecting';
+    updateBadge();
+
+    try {
+      const base = 'https://www.gstatic.com/firebasejs/10.12.2/';
+      await loadScript(base + 'firebase-app-compat.js');
+      await Promise.all([loadScript(base + 'firebase-database-compat.js'), loadScript(base + 'firebase-auth-compat.js')]);
+      const { ownerUid, ...firebaseOptions } = cfg; // ownerUid is ours, not Firebase's
+      firebase.initializeApp(firebaseOptions);
+    } catch (_) {
+      document.body.dataset.sync = 'offline';
+      updateBadge();
+      return;
+    }
+
+    const db = firebase.database();
+    const auth = firebase.auth();
+    remote = { ref: db.ref('trip') };
+
+    remote.ref.on('value', (snap) => {
+      const v = snap.val();
+      remoteLoaded = true;
+      remoteEmpty = v == null;
+      if (v) {
+        state = {
+          tripName: typeof v.tripName === 'string' && v.tripName ? v.tripName : 'My Trip',
+          members: asList(v.members),
+          expenses: asList(v.expenses),
+        };
+      } else if (!canEdit) {
+        state = defaults();
+      }
+      if (document.activeElement !== tripName) tripName.value = state.tripName;
+      document.title = state.tripName + ' · Trip Calculator';
+      document.body.dataset.sync = 'live';
+      updateBadge();
+      render();
+      seedIfEmpty();
+    }, () => {
+      document.body.dataset.sync = 'offline';
+      updateBadge();
+    });
+
+    db.ref('.info/connected').on('value', (snap) => {
+      connected = snap.val() === true;
+      if (document.body.dataset.sync !== 'connecting') {
+        document.body.dataset.sync = connected ? 'live' : 'offline';
+        updateBadge();
+      }
+    });
+
+    authBtn.hidden = false;
+    authBtn.addEventListener('click', async () => {
+      if (auth.currentUser) { auth.signOut(); return; }
+      try {
+        await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+      } catch (err) {
+        if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment')) {
+          auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
+        }
+      }
+    });
+
+    auth.onAuthStateChanged((user) => {
+      currentUser = user;
+      authBtn.textContent = user ? 'Sign out' : 'Sign in to edit';
+      // Only the owner gets edit controls. The database rules are what actually block others.
+      const isOwner = !!user && (!cfg.ownerUid || user.uid === cfg.ownerUid);
+      setEditable(isOwner);
+      if (user && !isOwner) showToast('This account is view only.', null);
+      if (user && !cfg.ownerUid) console.info('Your Firebase UID (put it in firebase-config.js and the rules):', user.uid);
+      seedIfEmpty();
+    });
+  }
+
+  // First owner sign-in on an empty database: carry over data saved on this device.
+  // Waits for the first snapshot so existing cloud data is never overwritten.
+  let seeded = false;
+  function seedIfEmpty() {
+    if (seeded || !remoteLoaded || !remoteEmpty || !currentUser || !canEdit) return;
+    if (!localSeed.members.length && !localSeed.expenses.length) return;
+    seeded = true;
+    state = localSeed;
+    render();
+    save();
+  }
+
+  if (cfg && cfg.databaseURL) initRemote();
 })();

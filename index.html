@@ -16,6 +16,10 @@
         <label class="visually-hidden" for="tripName">Trip name</label>
         <input id="tripName" class="trip-name" type="text" maxlength="40" value="My Trip" autocomplete="off" spellcheck="false">
       </div>
+      <div class="sync">
+        <span class="live-badge" id="liveBadge" hidden></span>
+        <button class="btn btn-small" id="authBtn" type="button" hidden>Sign in to edit</button>
+      </div>
     </header>
 
     <main>
@@ -119,6 +123,7 @@
     <button type="button" id="toastUndo">Undo</button>
   </div>
 
+  <script src="firebase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
