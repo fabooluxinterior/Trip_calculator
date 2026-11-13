@@ -1,21 +1,16 @@
-// Live sync settings. Leave this as null to keep the app local-only
+// Live sync settings. Set to null to make the app local-only again
 // (data stays in each browser's localStorage).
 //
-// To turn on live sync, replace null with your Firebase web app config
-// (Firebase console → Project settings → Your apps → Web app → Config)
-// and add your own user ID as ownerUid. See README → "Live sync with Firebase".
-//
 // These values are not secret: the database rules are what protect the data.
+// ownerUid: the Firebase user ID allowed to edit (Authentication → Users).
 
-window.TRIP_FIREBASE = null;
-
-/* Example:
 window.TRIP_FIREBASE = {
-  apiKey: "AIza...",
-  authDomain: "your-project.firebaseapp.com",
-  databaseURL: "https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "your-project",
-  appId: "1:1234567890:web:abc123",
-  ownerUid: "PASTE_YOUR_UID_HERE"
+  apiKey: "AIzaSyDZXakzZCDzoCvDOt-pI0FaizWt9HhhO2I",
+  authDomain: "trip-calculator-7edad.firebaseapp.com",
+  databaseURL: "https://trip-calculator-7edad-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "trip-calculator-7edad",
+  storageBucket: "trip-calculator-7edad.firebasestorage.app",
+  messagingSenderId: "131232834309",
+  appId: "1:131232834309:web:2e4130e1c057fd7c9d4d6c",
+  ownerUid: ""
 };
-*/
