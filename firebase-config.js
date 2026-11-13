@@ -12,5 +12,5 @@ window.TRIP_FIREBASE = {
   storageBucket: "trip-calculator-7edad.firebasestorage.app",
   messagingSenderId: "131232834309",
   appId: "1:131232834309:web:2e4130e1c057fd7c9d4d6c",
-  ownerUid: ""
+  ownerUid: "RofDQKfdj2dVznNUYQuPzP8fGvJ2"
 };

@@ -2,7 +2,7 @@
   "rules": {
     "trip": {
       ".read": true,
-      ".write": "auth != null && auth.uid === 'PASTE_YOUR_UID_HERE'"
+      ".write": "auth != null && auth.uid === 'RofDQKfdj2dVznNUYQuPzP8fGvJ2'"
     }
   }
 }
