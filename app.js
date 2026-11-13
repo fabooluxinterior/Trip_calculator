@@ -33,7 +33,26 @@
 
   /* ---------- State ---------- */
 
-  const defaults = () => ({ tripName: 'My Trip', members: [], expenses: [] });
+  // Built-in categories. Ids are fixed so every device and viewer agrees on them,
+  // even before the owner's first save writes them to the database.
+  const DEFAULT_CATEGORIES = [
+    { id: 'food', name: 'Food', color: 1 },
+    { id: 'fuel', name: 'Fuel', color: 2 },
+    { id: 'stay', name: 'Stay', color: 3 },
+    { id: 'transport', name: 'Transport', color: 4 },
+    { id: 'activities', name: 'Activities', color: 5 },
+    { id: 'shopping', name: 'Shopping', color: 6 },
+    { id: 'other', name: 'Other', color: 7 },
+  ];
+  const defaultCategories = () => DEFAULT_CATEGORIES.map((c) => ({ ...c }));
+  // Older saves have no categories: they get the built-in set, and their
+  // expenses (which have no category) show as Uncategorized until edited.
+  const readCategories = (list) => {
+    const valid = (Array.isArray(list) ? list : []).filter((c) => c && typeof c.id === 'string' && typeof c.name === 'string');
+    return valid.length ? valid : defaultCategories();
+  };
+
+  const defaults = () => ({ tripName: 'My Trip', members: [], expenses: [], categories: defaultCategories() });
 
   function load() {
     try {
@@ -43,6 +62,7 @@
           tripName: typeof raw.tripName === 'string' && raw.tripName ? raw.tripName : 'My Trip',
           members: raw.members,
           expenses: raw.expenses,
+          categories: readCategories(raw.categories),
         };
       }
     } catch (_) { /* fall through to defaults */ }
@@ -56,7 +76,7 @@
   function save() {
     if (remote) {
       if (!canEdit) return;
-      remote.ref.set({ tripName: state.tripName, members: state.members, expenses: state.expenses })
+      remote.ref.set({ tripName: state.tripName, members: state.members, expenses: state.expenses, categories: state.categories })
         .catch(() => showToast('Could not save: this account cannot edit.', null));
       return;
     }
@@ -167,7 +187,7 @@
         el('li', { class: 'row' },
           el('div', { class: 'row-main' },
             el('span', { class: 'row-title', text: e.title }),
-            el('span', { class: 'row-sub', text: prettyDate(e.date) })
+            el('span', { class: 'row-sub', text: [prettyDate(e.date), categoryOf(e).name].filter(Boolean).join(' · ') })
           ),
           el('span', { class: 'row-amount', text: money(Number(e.amount) || 0) }),
           el('div', { class: 'row-actions' },
@@ -183,6 +203,7 @@
     renderSummary();
     renderMembers();
     renderExpenses();
+    renderInsights();
   }
 
   /* ---------- Undo toast ---------- */
@@ -281,6 +302,7 @@
       $('#expenseTitle').value = expense.title;
       $('#expenseAmount').value = expense.amount;
     }
+    fillExpenseSelects(expense);
     expenseDialog.showModal();
     $('#expenseTitle').focus();
   }
@@ -295,11 +317,20 @@
     if (!title) return fail(error, 'Enter a description.');
     if (!Number.isFinite(amount) || amount <= 0) return fail(error, 'Enter an amount greater than zero.');
 
+    let category = $('#expenseCategory').value;
+    if (category === NEW_CATEGORY) {
+      const name = $('#newCategoryName').value.trim();
+      if (!name) return fail(error, 'Enter a name for the new category.');
+      category = ensureCategory(name).id;
+    }
+    const paidBy = $('#expensePaidBy').value || '';
+    lastCategory = category;
+
     if (editingExpenseId) {
       const e = state.expenses.find((x) => x.id === editingExpenseId);
-      if (e) { e.title = title; e.amount = amount; e.date = date; }
+      if (e) { e.title = title; e.amount = amount; e.date = date; e.category = category; e.paidBy = paidBy; }
     } else {
-      state.expenses.push({ id: uid(), title, amount, date });
+      state.expenses.push({ id: uid(), title, amount, date, category, paidBy });
     }
     save();
     render();
@@ -319,6 +350,488 @@
     });
   }
 
+  /* ---------- Expense management: categories, payers, insights ---------- */
+
+  const NEW_CATEGORY = '__new';
+  const UNCATEGORIZED = { id: '', name: 'Uncategorized', color: 0 };
+  const FUND_NAME = 'Trip fund';
+  const MAX_SLICES = 8; // the chart palette has eight colours; smaller slices fold into "More"
+
+  let lastCategory = null;
+  let selectedCategory = null; // null = all; '' = uncategorized; otherwise a category id
+
+  const categoryById = (id) => state.categories.find((c) => c.id === id);
+  const categoryOf = (expense) => categoryById(expense.category) || UNCATEGORIZED;
+  const memberById = (id) => state.members.find((m) => m.id === id);
+  const payerName = (expense) => {
+    if (!expense.paidBy) return FUND_NAME;
+    const m = memberById(expense.paidBy);
+    return m ? m.name : 'Removed member';
+  };
+  const swatch = (color) => 'var(--cat-' + (Number(color) || 0) + ')';
+  const pct = (part, whole) => (whole > 0 ? (part / whole) * 100 : 0);
+  const pctText = (p) => (p > 0 && p < 1 ? '<1%' : Math.round(p) + '%');
+  const toPaise = (n) => Math.round((Number(n) || 0) * 100);
+
+  function nextColor() {
+    const used = new Set(state.categories.map((c) => Number(c.color)));
+    for (let k = 1; k <= 8; k++) if (!used.has(k)) return k;
+    return (state.categories.length % 8) + 1;
+  }
+
+  // Returns the existing category with this name (any case), or creates it.
+  function ensureCategory(name) {
+    const existing = state.categories.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (existing) return existing;
+    const category = { id: uid(), name, color: nextColor() };
+    state.categories.push(category);
+    return category;
+  }
+
+  function fillExpenseSelects(expense) {
+    const catSelect = $('#expenseCategory');
+    catSelect.replaceChildren();
+    for (const c of state.categories) catSelect.append(el('option', { value: c.id, text: c.name }));
+    const current = expense ? categoryOf(expense) : null;
+    if (expense && current === UNCATEGORIZED) catSelect.append(el('option', { value: expense.category || '', text: 'Uncategorized' }));
+    catSelect.append(el('option', { value: NEW_CATEGORY, text: '+ New category…' }));
+
+    let value;
+    if (expense) value = current === UNCATEGORIZED ? (expense.category || '') : current.id;
+    else value = (lastCategory && categoryById(lastCategory)) ? lastCategory : (state.categories[0] ? state.categories[0].id : NEW_CATEGORY);
+    catSelect.value = value;
+
+    const paidSelect = $('#expensePaidBy');
+    paidSelect.replaceChildren(el('option', { value: '', text: FUND_NAME + ' (pool)' }));
+    for (const m of state.members) paidSelect.append(el('option', { value: m.id, text: m.name }));
+    if (expense && expense.paidBy && !memberById(expense.paidBy)) {
+      paidSelect.append(el('option', { value: expense.paidBy, text: 'Removed member' }));
+    }
+    paidSelect.value = expense ? (expense.paidBy || '') : '';
+
+    $('#newCategoryName').value = '';
+    syncNewCategoryField();
+  }
+
+  function syncNewCategoryField() {
+    const isNew = $('#expenseCategory').value === NEW_CATEGORY;
+    $('#newCategoryField').hidden = !isNew;
+  }
+  $('#expenseCategory').addEventListener('change', () => {
+    syncNewCategoryField();
+    if ($('#expenseCategory').value === NEW_CATEGORY) $('#newCategoryName').focus();
+  });
+
+  /* ----- Calculations ----- */
+
+  // Spend per category, largest first. Colour stays with the category, not its rank.
+  function categoryTotals() {
+    const map = new Map();
+    for (const e of state.expenses) {
+      const c = categoryOf(e);
+      const key = c === UNCATEGORIZED ? '' : c.id;
+      const t = map.get(key) || { id: key, cat: c, total: 0, count: 0 };
+      t.total += Number(e.amount) || 0;
+      t.count += 1;
+      map.set(key, t);
+    }
+    return [...map.values()].filter((t) => t.total > 0).sort((a, b) => b.total - a.total);
+  }
+
+  function chartSlices(totals) {
+    if (totals.length <= MAX_SLICES) return totals;
+    const head = totals.slice(0, MAX_SLICES - 1);
+    const rest = totals.slice(MAX_SLICES - 1);
+    head.push({
+      id: null, more: true, cat: { name: rest.length + ' more', color: 0 },
+      total: rest.reduce((s, t) => s + t.total, 0), count: rest.reduce((s, t) => s + t.count, 0),
+    });
+    return head;
+  }
+
+  // Equal split of all expenses. A member's balance is what they put in
+  // (contribution + expenses they paid themselves) minus their fair share.
+  function memberBalances() {
+    const total = sum(state.expenses);
+    const n = state.members.length;
+    const fair = n ? total / n : 0;
+    // Split in whole paise so the balances add up exactly; leftover paise go to the first members.
+    const totalPaise = state.expenses.reduce((s, e) => s + toPaise(e.amount), 0);
+    const base = n ? Math.floor(totalPaise / n) : 0;
+    const extra = n ? totalPaise - base * n : 0;
+    const rows = state.members.map((m, i) => {
+      const contributed = Number(m.amount) || 0;
+      const paidPaise = state.expenses.filter((e) => e.paidBy === m.id).reduce((s, e) => s + toPaise(e.amount), 0);
+      const fairPaise = base + (i < extra ? 1 : 0);
+      return {
+        member: m, contributed, paid: paidPaise / 100, fair: fairPaise / 100,
+        net: (toPaise(contributed) + paidPaise - fairPaise) / 100,
+      };
+    });
+    return { rows, fair, total };
+  }
+
+  // Fewest transfers that settle everyone. Money left in the trip fund is paid
+  // out from it; a fund that is short is topped up by those who owe.
+  function settlements(rows) {
+    const parties = rows.map((r) => ({ name: r.member.name, net: toPaise(r.net) }));
+    const memberNet = parties.reduce((s, p) => s + p.net, 0);
+    if (memberNet !== 0) parties.push({ name: FUND_NAME, net: -memberNet, fund: true });
+
+    const creditors = parties.filter((p) => p.net > 0).sort((a, b) => b.net - a.net);
+    const debtors = parties.filter((p) => p.net < 0).map((p) => ({ ...p, net: -p.net })).sort((a, b) => b.net - a.net);
+    const transfers = [];
+    let i = 0, j = 0;
+    while (i < debtors.length && j < creditors.length) {
+      const amount = Math.min(debtors[i].net, creditors[j].net);
+      if (amount > 0) transfers.push({ from: debtors[i], to: creditors[j], amount: amount / 100 });
+      debtors[i].net -= amount;
+      creditors[j].net -= amount;
+      if (debtors[i].net === 0) i++;
+      if (creditors[j].net === 0) j++;
+    }
+    return transfers;
+  }
+
+  /* ----- Doughnut chart ----- */
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const svg = (tag, attrs) => {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    return node;
+  };
+
+  function drawDonut(host, slices, total, onPick) {
+    host.replaceChildren();
+    const R = 76, STROKE = 26, C = 2 * Math.PI * R;
+    const root = svg('svg', { viewBox: '0 0 200 200', role: 'group', 'aria-label': 'Spending by category' });
+    root.append(svg('circle', { cx: 100, cy: 100, r: R, fill: 'none', stroke: 'var(--border)', 'stroke-width': STROKE }));
+
+    const center = el('div', { class: 'donut-center' });
+    const centerLabel = el('span', { class: 'donut-label' });
+    const centerValue = el('strong', { class: 'donut-value' });
+    const centerSub = el('span', { class: 'donut-sub' });
+    center.append(centerLabel, centerValue, centerSub);
+
+    const selected = slices.find((s) => !s.more && s.id === selectedCategory);
+    const showCenter = (s) => {
+      if (s) {
+        centerLabel.textContent = s.cat.name;
+        centerValue.textContent = money(s.total);
+        centerSub.textContent = pctText(pct(s.total, total)) + ' · ' + s.count + (s.count === 1 ? ' expense' : ' expenses');
+      } else {
+        centerLabel.textContent = 'Total spent';
+        centerValue.textContent = money(total);
+        centerSub.textContent = slices.length ? slices.length + (slices.length === 1 ? ' category' : ' categories') : 'No expenses yet';
+      }
+    };
+    showCenter(selected);
+
+    const gap = slices.length > 1 ? 2 : 0; // 2px surface gap between segments
+    let start = 0;
+    for (const s of slices) {
+      const frac = total > 0 ? s.total / total : 0;
+      const len = Math.max(frac * C - gap, 0.5);
+      const seg = svg('circle', {
+        cx: 100, cy: 100, r: R, fill: 'none',
+        stroke: swatch(s.cat.color), 'stroke-width': STROKE,
+        'stroke-dasharray': len + ' ' + (C - len),
+        'stroke-dashoffset': String(-start * C),
+        class: 'donut-seg' + (selected && selected !== s ? ' is-dim' : '') + (selected === s ? ' is-active' : ''),
+        tabindex: s.more ? '-1' : '0',
+        role: s.more ? 'img' : 'button',
+        'aria-label': s.cat.name + ', ' + money(s.total) + ', ' + pctText(pct(s.total, total)),
+      });
+      seg.addEventListener('pointerenter', () => showCenter(s));
+      seg.addEventListener('pointerleave', () => showCenter(selected));
+      seg.addEventListener('focus', () => showCenter(s));
+      seg.addEventListener('blur', () => showCenter(selected));
+      if (!s.more) {
+        seg.addEventListener('click', () => onPick(s.id));
+        seg.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onPick(s.id); }
+        });
+      }
+      root.append(seg);
+      start += frac;
+    }
+    host.append(root, center);
+  }
+
+  function drawLegend(list, slices, total, onPick, limit) {
+    list.replaceChildren();
+    if (!slices.length) {
+      list.append(el('li', { class: 'legend-empty', text: 'Add expenses to see where the money goes.' }));
+      return;
+    }
+    const shown = limit ? slices.slice(0, limit) : slices;
+    for (const s of shown) {
+      const active = !s.more && s.id === selectedCategory;
+      const item = el('button', {
+        class: 'legend-item' + (active ? ' is-active' : ''), type: 'button',
+        'aria-pressed': String(active),
+        onclick: () => onPick(s.more ? null : s.id),
+      },
+        el('span', { class: 'legend-dot', style: 'background:' + swatch(s.cat.color) }),
+        el('span', { class: 'legend-name', text: s.cat.name }),
+        el('span', { class: 'legend-amount', text: money(s.total) }),
+        el('span', { class: 'legend-pct', text: pctText(pct(s.total, total)) })
+      );
+      list.append(el('li', {}, item));
+    }
+    if (limit && slices.length > limit) {
+      list.append(el('li', {}, el('a', { class: 'legend-more', href: '#details', text: '+ ' + (slices.length - limit) + ' more' })));
+    }
+  }
+
+  /* ----- Details page ----- */
+
+  function pickFromHome(id) {
+    selectedCategory = id;
+    if (location.hash === '#details') render();
+    else location.hash = 'details';
+  }
+
+  function pickOnDetails(id) {
+    selectedCategory = selectedCategory === id ? null : id;
+    render();
+    if (selectedCategory !== null && window.matchMedia('(max-width: 720px)').matches) {
+      $('#historyCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  function renderInsights() {
+    const totals = categoryTotals();
+    const total = sum(state.expenses);
+    if (selectedCategory !== null && !totals.some((t) => t.id === selectedCategory)) selectedCategory = null;
+    const slices = chartSlices(totals);
+
+    drawDonut($('#miniDonut'), slices, total, pickFromHome);
+    drawLegend($('#miniLegend'), slices, total, pickFromHome, 4);
+    drawDonut($('#fullDonut'), slices, total, pickOnDetails);
+    drawLegend($('#fullLegend'), totals, total, pickOnDetails, 0);
+    $('#categoryCount').textContent = String(state.categories.length);
+
+    renderHistory(totals);
+    renderBalances();
+  }
+
+  function renderHistory(totals) {
+    const chips = $('#historyFilters');
+    chips.replaceChildren();
+    const chip = (label, id, color) => {
+      const active = selectedCategory === id;
+      const b = el('button', {
+        class: 'chip' + (active ? ' is-active' : ''), type: 'button', 'aria-pressed': String(active),
+        onclick: () => { selectedCategory = id; render(); },
+      });
+      if (color !== undefined) b.append(el('span', { class: 'legend-dot', style: 'background:' + swatch(color) }));
+      b.append(document.createTextNode(label));
+      return b;
+    };
+    chips.append(chip('All', null));
+    for (const t of totals) chips.append(chip(t.cat.name + ' (' + t.count + ')', t.id, t.cat.color));
+    chips.hidden = !state.expenses.length;
+
+    const list = $('#historyList');
+    list.replaceChildren();
+    const filtered = state.expenses
+      .filter((e) => selectedCategory === null || (categoryOf(e) === UNCATEGORIZED ? '' : categoryOf(e).id) === selectedCategory)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    $('#historyCount').textContent = String(filtered.length);
+
+    if (!filtered.length) {
+      list.append(el('li', { class: 'empty', text: state.expenses.length ? 'No expenses in this category.' : 'No expenses yet. Add the first one as you spend.' }));
+    }
+    for (const e of filtered) {
+      const c = categoryOf(e);
+      list.append(
+        el('li', { class: 'row' },
+          el('span', { class: 'cat-mark', style: 'background:' + swatch(c.color), 'aria-hidden': 'true' }),
+          el('div', { class: 'row-main' },
+            el('span', { class: 'row-title', text: e.title }),
+            el('span', { class: 'row-sub', text: [prettyDate(e.date), c.name, 'Paid by ' + payerName(e)].filter(Boolean).join(' · ') })
+          ),
+          el('span', { class: 'row-amount', text: money(Number(e.amount) || 0) }),
+          el('div', { class: 'row-actions' },
+            iconButton('Edit ' + e.title, ICON_EDIT, () => openExpenseDialog(e)),
+            iconButton('Remove ' + e.title, ICON_TRASH, () => removeExpense(e.id))
+          )
+        )
+      );
+    }
+
+    const shownTotal = sum(filtered);
+    const totalRow = $('#historyTotal');
+    totalRow.replaceChildren(
+      el('span', { text: selectedCategory === null ? 'All expenses' : (filtered[0] ? categoryOf(filtered[0]).name : '') }),
+      el('strong', { text: money(shownTotal) })
+    );
+    totalRow.hidden = !filtered.length;
+  }
+
+  function renderBalances() {
+    const { rows, fair, total } = memberBalances();
+    $('#fairShareNote').textContent = rows.length && total > 0 ? 'Fair share ' + money(fair) + ' each' : '';
+
+    const body = $('#balanceRows');
+    body.replaceChildren();
+    if (!rows.length) {
+      body.append(el('tr', {}, el('td', { class: 'empty', colspan: '5', text: 'Add members to see contributions and balances.' })));
+    }
+    for (const r of rows) {
+      const paise = toPaise(r.net);
+      const status = paise > 0 ? 'Gets back ' + money(paise / 100) : paise < 0 ? 'Owes ' + money(-paise / 100) : 'Settled';
+      body.append(
+        el('tr', {},
+          el('th', { scope: 'row' },
+            el('span', { class: 'member-cell' },
+              el('span', { class: 'avatar', 'aria-hidden': 'true', text: (r.member.name.trim()[0] || '?') }),
+              el('span', { class: 'row-title', text: r.member.name })
+            )
+          ),
+          el('td', { 'data-label': 'Contributed', text: money(r.contributed) }),
+          el('td', { 'data-label': 'Paid for expenses', text: money(r.paid) }),
+          el('td', { 'data-label': 'Fair share', text: money(r.fair) }),
+          el('td', { 'data-label': 'Balance', class: 'bal' + (paise < 0 ? ' is-owes' : ''), text: status })
+        )
+      );
+    }
+
+    const list = $('#settleList');
+    list.replaceChildren();
+    const transfers = rows.length ? settlements(rows) : [];
+    if (!transfers.length) {
+      list.append(el('li', { class: 'empty', text: rows.length ? 'Everyone is settled up.' : 'Add members to see who pays whom.' }));
+    }
+    for (const t of transfers) {
+      const sub = t.from.fund ? 'Refund from the trip fund' : t.to.fund ? 'Top up the trip fund' : 'Direct payment';
+      list.append(
+        el('li', { class: 'row' },
+          el('div', { class: 'row-main' },
+            el('span', { class: 'row-title', text: t.from.name + ' → ' + t.to.name }),
+            el('span', { class: 'row-sub', text: sub })
+          ),
+          el('span', { class: 'row-amount', text: money(t.amount) })
+        )
+      );
+    }
+  }
+
+  /* ----- Category manager ----- */
+
+  const categoryDialog = $('#categoryDialog');
+  const categoryForm = $('#categoryForm');
+  let editingCategoryId = null;
+
+  function resetCategoryForm() {
+    editingCategoryId = null;
+    categoryForm.reset();
+    $('#categoryFormLabel').textContent = 'New category';
+    $('#categorySubmit').textContent = 'Add';
+    $('#categoryCancelEdit').hidden = true;
+    $('#categoryError').hidden = true;
+  }
+
+  function renderCategoryList() {
+    const list = $('#categoryList');
+    list.replaceChildren();
+    if (!state.categories.length) {
+      list.append(el('li', { class: 'empty', text: 'No categories. Add one above.' }));
+      return;
+    }
+    for (const c of state.categories) {
+      const used = state.expenses.filter((e) => e.category === c.id);
+      list.append(
+        el('li', { class: 'row' },
+          el('span', { class: 'cat-mark', style: 'background:' + swatch(c.color), 'aria-hidden': 'true' }),
+          el('div', { class: 'row-main' },
+            el('span', { class: 'row-title', text: c.name }),
+            el('span', { class: 'row-sub', text: used.length + (used.length === 1 ? ' expense · ' : ' expenses · ') + money(sum(used)) })
+          ),
+          el('div', { class: 'row-actions' },
+            iconButton('Rename ' + c.name, ICON_EDIT, () => {
+              editingCategoryId = c.id;
+              $('#categoryName').value = c.name;
+              $('#categoryFormLabel').textContent = 'Rename category';
+              $('#categorySubmit').textContent = 'Save';
+              $('#categoryCancelEdit').hidden = false;
+              $('#categoryError').hidden = true;
+              $('#categoryName').focus();
+            }),
+            iconButton('Delete ' + c.name, ICON_TRASH, () => removeCategory(c.id))
+          )
+        )
+      );
+    }
+  }
+
+  function removeCategory(id) {
+    const index = state.categories.findIndex((c) => c.id === id);
+    if (index < 0) return;
+    const [removed] = state.categories.splice(index, 1);
+    if (editingCategoryId === id) resetCategoryForm();
+    save();
+    render();
+    renderCategoryList();
+    // Expenses keep their category id, so Undo reconnects them.
+    showToast(removed.name + ' deleted', () => {
+      state.categories.splice(Math.min(index, state.categories.length), 0, removed);
+      save();
+      render();
+      renderCategoryList();
+    });
+  }
+
+  categoryForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = $('#categoryName').value.trim();
+    const error = $('#categoryError');
+    if (!name) return fail(error, 'Enter a category name.');
+    const clash = state.categories.find((c) => c.name.toLowerCase() === name.toLowerCase() && c.id !== editingCategoryId);
+    if (clash) return fail(error, 'A category with this name already exists.');
+
+    if (editingCategoryId) {
+      const c = categoryById(editingCategoryId);
+      if (c) c.name = name;
+    } else {
+      state.categories.push({ id: uid(), name, color: nextColor() });
+    }
+    resetCategoryForm();
+    save();
+    render();
+    renderCategoryList();
+  });
+
+  $('#categoryCancelEdit').addEventListener('click', resetCategoryForm);
+
+  $('#manageCategoriesBtn').addEventListener('click', () => {
+    resetCategoryForm();
+    renderCategoryList();
+    categoryDialog.showModal();
+  });
+
+  $('#historyAddBtn').addEventListener('click', () => openExpenseDialog(null));
+
+  /* ----- Page routing: #details shows the full breakdown ----- */
+
+  function route() {
+    const details = location.hash === '#details';
+    document.body.dataset.page = details ? 'details' : 'home';
+    $('#detailsPage').hidden = !details;
+    $('#detailsHead').hidden = !details;
+    document.title = (details ? 'Details · ' : '') + state.tripName + ' · Trip Calculator';
+    window.scrollTo(0, 0);
+  }
+
+  $('#backBtn').addEventListener('click', (event) => {
+    event.preventDefault();
+    selectedCategory = null;
+    location.hash = '';
+    render();
+  });
+
   /* ---------- Shared UI wiring ---------- */
 
   function fail(node, message) {
@@ -327,7 +840,7 @@
     return false;
   }
 
-  for (const dialog of [memberDialog, expenseDialog]) {
+  for (const dialog of [memberDialog, expenseDialog, categoryDialog]) {
     // Clicking the backdrop (the dialog element itself) closes it.
     dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
     dialog.querySelectorAll('[data-close]').forEach((btn) => btn.addEventListener('click', () => dialog.close()));
@@ -356,6 +869,8 @@
   tripName.addEventListener('keydown', (event) => { if (event.key === 'Enter') tripName.blur(); });
   document.title = state.tripName + ' · Trip Calculator';
 
+  window.addEventListener('hashchange', () => { route(); render(); });
+  route();
   render();
 
   /* ---------- Live sync (optional) ----------
@@ -433,6 +948,7 @@
           tripName: typeof v.tripName === 'string' && v.tripName ? v.tripName : 'My Trip',
           members: asList(v.members),
           expenses: asList(v.expenses),
+          categories: readCategories(asList(v.categories)),
         };
       } else if (!canEdit) {
         state = defaults();

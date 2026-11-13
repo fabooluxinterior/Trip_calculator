@@ -22,7 +22,15 @@
       </div>
     </header>
 
-    <main>
+    <main id="mainView">
+      <div class="details-head" id="detailsHead" hidden>
+        <a class="btn btn-small" href="#" id="backBtn">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3 5 8l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          Back
+        </a>
+        <h1>Expense details</h1>
+      </div>
+
       <section class="summary" aria-label="Summary">
         <article class="stat">
           <span class="stat-label">Total Collected</span>
@@ -71,6 +79,73 @@
           <ul class="list" id="expenseList"></ul>
         </section>
       </div>
+
+      <section class="card insights" id="insightsCard">
+        <div class="card-head">
+          <h2>Spending by category</h2>
+          <a class="btn btn-small" href="#details" id="viewDetailsBtn">View Details</a>
+        </div>
+        <div class="insights-body" id="miniInsights">
+          <div class="donut" id="miniDonut"></div>
+          <ul class="legend" id="miniLegend"></ul>
+        </div>
+      </section>
+
+      <div class="details" id="detailsPage" hidden>
+        <div class="details-grid">
+          <section class="card" id="categoryCard">
+            <div class="card-head">
+              <h2>Categories <span class="count" id="categoryCount">0</span></h2>
+              <button class="btn btn-small owner-only" id="manageCategoriesBtn" type="button">Manage</button>
+            </div>
+            <div class="insights-body">
+              <div class="donut donut-lg" id="fullDonut"></div>
+              <ul class="legend" id="fullLegend"></ul>
+            </div>
+          </section>
+
+          <section class="card" id="historyCard">
+            <div class="card-head">
+              <h2>Expense history <span class="count" id="historyCount">0</span></h2>
+              <button class="btn btn-primary btn-small owner-only" id="historyAddBtn" type="button">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+                Add
+              </button>
+            </div>
+            <div class="chips" id="historyFilters" role="toolbar" aria-label="Filter by category"></div>
+            <ul class="list" id="historyList"></ul>
+            <div class="history-total" id="historyTotal"></div>
+          </section>
+        </div>
+
+        <section class="card" id="balancesCard">
+          <div class="card-head">
+            <h2>Member balances</h2>
+            <span class="head-note" id="fairShareNote"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="balances">
+              <thead>
+                <tr>
+                  <th scope="col">Member</th>
+                  <th scope="col">Contributed</th>
+                  <th scope="col">Paid for expenses</th>
+                  <th scope="col">Fair share</th>
+                  <th scope="col">Balance</th>
+                </tr>
+              </thead>
+              <tbody id="balanceRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card" id="settleCard">
+          <div class="card-head">
+            <h2>Settle up</h2>
+          </div>
+          <ul class="list" id="settleList"></ul>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -110,12 +185,45 @@
           <input id="expenseDate" name="date" type="date" required>
         </label>
       </div>
+      <div class="field-row">
+        <label class="field">
+          <span>Category</span>
+          <select id="expenseCategory"></select>
+        </label>
+        <label class="field">
+          <span>Paid by</span>
+          <select id="expensePaidBy"></select>
+        </label>
+      </div>
+      <label class="field" id="newCategoryField" hidden>
+        <span>New category name</span>
+        <input id="newCategoryName" type="text" maxlength="24" autocomplete="off" placeholder="e.g. Parking">
+      </label>
       <p class="form-error" id="expenseError" role="alert" hidden></p>
       <div class="dialog-actions">
         <button class="btn" type="button" data-close>Cancel</button>
         <button class="btn btn-primary" type="submit" id="expenseSubmit">Add</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="categoryDialog" class="dialog" aria-labelledby="categoryDialogTitle">
+    <div class="dialog-body">
+      <h3 id="categoryDialogTitle">Categories</h3>
+      <form id="categoryForm" class="inline-form" novalidate>
+        <label class="field">
+          <span id="categoryFormLabel">New category</span>
+          <input id="categoryName" type="text" maxlength="24" autocomplete="off" placeholder="e.g. Parking">
+        </label>
+        <button class="btn" type="button" id="categoryCancelEdit" hidden>Cancel</button>
+        <button class="btn btn-primary" type="submit" id="categorySubmit">Add</button>
+      </form>
+      <p class="form-error" id="categoryError" role="alert" hidden></p>
+      <ul class="list cat-list" id="categoryList"></ul>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>Done</button>
+      </div>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden>

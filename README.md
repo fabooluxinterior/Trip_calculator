@@ -5,6 +5,9 @@ A small, minimal web app for tracking a group trip's money: how much was collect
 - **Dashboard:** Total Collected, Total Expenses and Remaining Balance at the top, with a thin bar showing how much has been spent.
 - **Members:** add, edit and remove members and the amount each has contributed.
 - **Expenses:** add, edit and remove expenses, newest first.
+- **Categories:** every expense has a category and a payer (the trip fund or a member). Add, rename and delete your own categories under **Manage**.
+- **Spending chart:** a doughnut chart of spending by category with amounts and percentages. Tap a category to see its expenses.
+- **View Details:** the full breakdown, with expense history and category filters, member contributions and spending, each member's fair share and balance, and a **Settle up** list of who pays whom.
 - **Undo:** removing a member or expense shows an Undo option for a few seconds.
 - **Saved in the browser:** by default data is stored in `localStorage` on the device. There is no server and nothing is uploaded.
 - **Optional live sync:** with Firebase set up, everyone with the link sees the trip update live, and only you (signed in with Google) can edit.
